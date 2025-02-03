@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: reports-dashboard
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - app_network
+    volumes:
+      - .:/app
+    command: ["node", "cronJob.js"]
+
+  db:
+    image: mysql:8.0
+    container_name: reports-db
+    restart: always
+    environment:
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASS}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS}
+    ports:
+      - "3306:3306"
+    networks:
+      - app_network
+    volumes:
+      - mysqldata:/var/lib/mysql
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  mysqldata:
