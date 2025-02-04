@@ -77,6 +77,46 @@ const fetchAndProcessData = async () => {
       GROUP BY campaign_id
     `);
 
+    // 🔹 Räkna antal kuponger skickade
+    const [giftcardsSentResults] = await connection.execute(`
+      SELECT campaign_id, COUNT(*) AS giftcards_sent
+      FROM db_practice.participant
+      WHERE coupon_sent = 1
+      GROUP BY campaign_id
+    `);
+
+    // 🔹 Summera betalningar för betalda leads
+    const [moneyReceivedResults] = await connection.execute(`
+      SELECT campaign_id, SUM(amount) AS money_received
+      FROM db_practice.participant
+      WHERE status = 'PAID'
+      GROUP BY campaign_id
+    `);
+
+    // 🔹 Räkna genomsnittlig betalning
+    const [averagePaymentResults] = await connection.execute(`
+      SELECT p.campaign_id, 
+             COALESCE(SUM(p.amount) / NULLIF(COUNT(p.id), 0), 0) AS avarage_payment
+      FROM db_practice.participant p
+      WHERE p.status = 'PAID'
+      GROUP BY p.campaign_id
+    `);
+
+    // 🔹 Räkna engagemangstid
+    const [engagementTimeResults] = await connection.execute(`
+      SELECT campaign_id, AVG(TIMESTAMPDIFF(SECOND, landing_time, form_submit_time)) AS engagement_time
+      FROM db_practice.participant
+      GROUP BY campaign_id
+    `);
+
+    // 🔹 Räkna antal slutförda spel
+    const [gamesFinishedResults] = await connection.execute(`
+      SELECT campaign_id, COUNT(*) AS games_finished
+      FROM db_practice.participant
+      WHERE game_completed = 1
+      GROUP BY campaign_id
+    `);
+
     connection.release();
 
     return {
@@ -87,7 +127,12 @@ const fetchAndProcessData = async () => {
       uniqueLeadResults,
       recuringLeadResults,
       conversionRateResults,
-      smsPartsResults
+      smsPartsResults,
+      giftcardsSentResults,
+      moneyReceivedResults,
+      averagePaymentResults,
+      engagementTimeResults,
+      gamesFinishedResults
     };
   } catch (err) {
     console.error("❌ Fel vid hämtning av data:", err);
