@@ -13,6 +13,7 @@ services:
       - app_network
     volumes:
       - .:/app
+      - ./databases.json:/app/databases.json 
     command: ["node", "cronJob.js"]
 
   db:
@@ -21,7 +22,7 @@ services:
     restart: always
     environment:
       MYSQL_DATABASE: ${DB_NAME}
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS}  # Endast root-lösenord, ingen MYSQL_USER eller MYSQL_PASSWORD
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS}
     ports:
       - "3306:3306"
     networks:

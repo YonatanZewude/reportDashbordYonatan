@@ -1,141 +1,177 @@
 const pool = require("../db/connection");
 
-const fetchAndProcessData = async () => {
+const fetchAndProcessData = async (pool) => {
   try {
     const connection = await pool.getConnection();
 
-    //Hämta kampanjvisningar per länk (Action #1)
-    const [viewResults] = await connection.execute(`
-      SELECT v.campaign_id, v.view_r AS link, COUNT(*) AS views
-      FROM db_practice.view v
-      WHERE v.created >= NOW() - INTERVAL 1 DAY
+    const fetchData = async (query, name) => {
+      try {
+        const [result] = await connection.execute(query);
+        return result || [];
+      } catch (err) {
+        console.error(`❌ Fel vid hämtning av ${name}:`, err);
+        return [];
+      }
+    };
+
+    const specificDate = "2025-02-01"; 
+
+    const dateCondition = specificDate 
+        ? `v.created >= '${specificDate} 00:00:00' AND v.created < '${specificDate} 23:59:59'`
+        : `v.created >= NOW() - INTERVAL 1 DAY`;
+
+    const viewResults = await fetchData(`
+     SELECT v.campaign_id, 
+       v.view_r AS link, 
+       COUNT(*) AS views, 
+       MIN(COALESCE(p.created, v.created)) AS created_date
+       FROM view v
+       LEFT JOIN participant p ON v.participant_id = p.id
+       WHERE ${dateCondition}
+       GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+      `, "viewResults");
+
+    const leadResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, COUNT(DISTINCT p.id) AS leads, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE (p.telephone IS NOT NULL OR p.name IS NOT NULL OR p.email IS NOT NULL)
+      AND  ${dateCondition}
       GROUP BY v.campaign_id, v.view_r
-    `);
+      ORDER BY v.campaign_id, v.view_r;
+    `, "leadResults");
 
-    //Hämta totalt antal visningar per kampanj (Action #2, #3)
-    const [campaignViewResults] = await connection.execute(`
-      SELECT campaign_id, COUNT(*) AS views
-      FROM db_practice.view
-      WHERE created >= NOW() - INTERVAL 1 DAY
-      GROUP BY campaign_id
-    `);
-
-    //Hämta antal leads per kampanj (Action #2, #3)
-    const [leadResults] = await connection.execute(`
-      SELECT campaign_id, COUNT(*) AS leads
-      FROM db_practice.participant
-      WHERE telephone IS NOT NULL AND name IS NOT NULL AND email IS NOT NULL
-      GROUP BY campaign_id
-    `);
-
-    //Hämta antal betalda leads per kampanj (Action #2, #3)
-    const [paidLeadResults] = await connection.execute(`
-      SELECT campaign_id, COUNT(*) AS paid_leads
-      FROM db_practice.participant
-      WHERE status = 'PAID'
-      GROUP BY campaign_id
-    `);
-
-    //Hämta unika leads där status = 'PAID' (unique_leads)
-    const [uniqueLeadResults] = await connection.execute(`
-      SELECT campaign_id, COUNT(DISTINCT telephone) AS unique_leads
-      FROM db_practice.participant
-      WHERE status = 'PAID'
-      GROUP BY campaign_id
-    `);
-
-    //Hämta **unika** leads där custom_text4 = 'ACTIVE' (recuring_leads)
-    const [recuringLeadResults] = await connection.execute(`
-      SELECT campaign_id, COUNT(DISTINCT telephone) AS recuring_leads
-      FROM db_practice.participant
-      WHERE custom_text4 = 'ACTIVE'
-      GROUP BY campaign_id
-    `);
-
-    //Räkna konverteringsgrad (conversion_rate) → (leads / views) * 100
-    const [conversionRateResults] = await connection.execute(`
-      SELECT v.campaign_id, 
-             (COUNT(DISTINCT p.id) / NULLIF(COUNT(v.id), 0)) * 100 AS conversion_rate
-      FROM db_practice.view v
-      LEFT JOIN db_practice.participant p ON v.campaign_id = p.campaign_id
-      GROUP BY v.campaign_id
-    `);
-
-    //Hämta och summera SMS-delar (sms_parts)
-    const [smsPartsResults] = await connection.execute(`
-      SELECT campaign_id, 
-             SUM(
-               COALESCE(
-                 CASE 
-                   WHEN JSON_VALID(report_download_email) 
-                   THEN JSON_UNQUOTE(JSON_EXTRACT(report_download_email, '$.parts')) 
-                   ELSE 0 
-                 END, 0
-               ) + COALESCE(sms_parts, 0)
-             ) AS sms_parts
-      FROM db_practice.participant
-      GROUP BY campaign_id
-    `);
-
-    // 🔹 Räkna antal kuponger skickade
-    const [giftcardsSentResults] = await connection.execute(`
-      SELECT campaign_id, COUNT(*) AS giftcards_sent
-      FROM db_practice.participant
-      WHERE coupon_sent = 1
-      GROUP BY campaign_id
-    `);
-
-    // 🔹 Summera betalningar för betalda leads
-    const [moneyReceivedResults] = await connection.execute(`
-      SELECT campaign_id, SUM(amount) AS money_received
-      FROM db_practice.participant
-      WHERE status = 'PAID'
-      GROUP BY campaign_id
-    `);
-
-    // 🔹 Räkna genomsnittlig betalning
-    const [averagePaymentResults] = await connection.execute(`
-      SELECT p.campaign_id, 
-             COALESCE(SUM(p.amount) / NULLIF(COUNT(p.id), 0), 0) AS avarage_payment
-      FROM db_practice.participant p
+    const paidLeadResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, COUNT(DISTINCT p.id) AS paid_leads, MIN(p.created) AS created_date
+      FROM view v
+      LEFT JOIN participant p ON v.participant_id = p.id
       WHERE p.status = 'PAID'
-      GROUP BY p.campaign_id
-    `);
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "paidLeadResults");
 
-    // 🔹 Räkna engagemangstid
-    const [engagementTimeResults] = await connection.execute(`
-      SELECT campaign_id, AVG(TIMESTAMPDIFF(SECOND, landing_time, form_submit_time)) AS engagement_time
-      FROM db_practice.participant
-      GROUP BY campaign_id
-    `);
+    const uniqueLeadsResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, COUNT(DISTINCT p.telephone) AS unique_leads, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE p.status = 'PAID' AND p.telephone IS NOT NULL
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "uniqueLeadsResults");
 
-    // 🔹 Räkna antal slutförda spel
-    const [gamesFinishedResults] = await connection.execute(`
-      SELECT campaign_id, COUNT(*) AS games_finished
-      FROM db_practice.participant
-      WHERE game_completed = 1
-      GROUP BY campaign_id
-    `);
+    const recurringLeadsResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, COUNT(DISTINCT p.telephone) AS recuring_leads, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE p.custom_text4 = 'ACTIVE' AND p.telephone IS NOT NULL
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "recurringLeadsResults");
+
+    const smsPartsResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, 
+      SUM(COALESCE(
+        CASE 
+          WHEN JSON_VALID(p.report_download_email) 
+          THEN JSON_UNQUOTE(JSON_EXTRACT(p.report_download_email, '$.parts')) 
+          ELSE 0 
+        END, 0) 
+      + COALESCE(p.sms_parts, 0)) AS sms_parts, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE (p.report_download_email IS NOT NULL OR p.sms_parts IS NOT NULL)
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "smsPartsResults");
+
+    const couponSentResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, COUNT(*) AS giftcards_sent, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE p.coupon_send = 1
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "couponSentResults");
+
+    const moneyReceivedResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, 
+      COALESCE(SUM(p.amount), 0) AS money_received, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE p.status = 'PAID' AND p.amount IS NOT NULL
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "moneyReceivedResults");
+
+    const engagementTimeResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, 
+      SEC_TO_TIME(AVG(p.time_spent)) AS engagement_time, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE p.time_spent IS NOT NULL
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "engagementTimeResults");
+
+    const transactionAbandonedResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, COUNT(*) AS abandoned_transactions, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE p.status IN ('ERROR', 'DECLINED')
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "transactionAbandonedResults");
+
+    const gamesFinishedResults = await fetchData(`
+      SELECT v.campaign_id, v.view_r AS link, COUNT(*) AS games_finished, MIN(p.created) AS created_date
+      FROM view v
+      JOIN participant p ON v.participant_id = p.id
+      WHERE p.points_scored IS NOT NULL 
+      AND p.points_scored != ''
+      AND  ${dateCondition}
+      GROUP BY v.campaign_id, v.view_r
+      ORDER BY v.campaign_id, v.view_r;
+    `, "gamesFinishedResults");
 
     connection.release();
 
     return {
       viewResults,
-      campaignViewResults,
       leadResults,
       paidLeadResults,
-      uniqueLeadResults,
-      recuringLeadResults,
-      conversionRateResults,
+      uniqueLeadsResults,
+      recurringLeadsResults,
       smsPartsResults,
-      giftcardsSentResults,
+      couponSentResults,
       moneyReceivedResults,
-      averagePaymentResults,
       engagementTimeResults,
-      gamesFinishedResults
+      transactionAbandonedResults,
+      gamesFinishedResults,
     };
   } catch (err) {
     console.error("❌ Fel vid hämtning av data:", err);
+    return {
+      viewResults: [],
+      leadResults: [],
+      paidLeadResults: [],
+      uniqueLeadsResults: [],
+      recurringLeadsResults: [],
+      smsPartsResults: [],
+      couponSentResults: [],
+      moneyReceivedResults: [],
+      engagementTimeResults: [],
+      transactionAbandonedResults: [],
+      gamesFinishedResults: [],
+    };
   }
 };
 
